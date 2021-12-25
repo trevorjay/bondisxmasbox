@@ -1,4 +1,4 @@
-![gameplay](bboxmas.gif)
+![gameplay](bboxmas03.gif)
 
 # Bondi's Box: Christmas Edition
 This is the [parenscript](https://common-lisp.net/project/parenscript/) source for "Bondi's Box: Christmas  Edition", an HTML5 falling/stacking puzzle 
