@@ -1,0 +1,771 @@
+(setf (readtable-case *readtable*) :invert)
+
+(let ((quicklisp-init (merge-pathnames "Downloads/foolin/joy/ql/setup.lisp"
+                                       (user-homedir-pathname))))
+  (when (probe-file quicklisp-init)
+    (load quicklisp-init)))
+
+(ql:quickload :parenscript)
+
+(defpackage "JOY" (:use "COMMON-LISP" "PARENSCRIPT"))
+(in-package "JOY")
+
+(defmacro defsrc (name)
+  `(defmacro ,name (&rest forms)
+     `(define-symbol-macro ,(intern (concatenate 'string ,(symbol-name name) "-SRC")) (ps ,@forms))))
+
+(defsrc main)
+(main
+
+ (defun resize ()
+   (let* ((rect (chain body (get-bounding-client-rect)))
+	  (w (@ rect width))
+	  (h (@ rect height))
+	  (s 0.75))
+     (setf (@ body rect) rect)
+     (if (> (* w s) h)
+	 (progn
+	   (chain document document-element style (set-property "--base-size" (concatenate 'string (* (/ h s) (/ 100.0 1440.0)) "px")))
+	   (setf (@ scrn style width) (concatenate 'string (/ h s) "px"))
+	   (setf (@ scrn style height) (concatenate 'string h "px")))
+	 (progn
+	   (chain document document-element style (set-property "--base-size" (concatenate 'string (* w (/ 100.0 1440.0)) "px")))
+	   (setf (@ scrn style width) (concatenate 'string w "px"))
+	   (setf (@ scrn style height) (concatenate 'string (* w s) "px"))))))
+ (setf (@ window onresize) #'resize)
+ (resize)
+
+ (defun fullscreen ()
+   (let ((rfs (or (@ body request-full-screen)
+		  (@ body webkit-request-full-screen)
+		  (@ body moz-request-full-screen)
+		  (@ body request-fullscreen)
+		  )))
+     (try
+      ((chain rfs (bind body)))
+      (:catch (ign)))))
+
+ (var pressed (list))
+ (defun handle-key (e)
+   (if (= (@ e key) "f")
+       (fullscreen)
+       (if (= (@ e key) "m")
+	   (if (@ music paused)
+	       (chain music (play))
+	       (chain music (pause)))  
+	   (chain pressed (push (@ e key))))))
+ (setf (@ document onkeydown) #'handle-key)
+ 
+ (defun rising-edge (a last-a)
+   (and (not (= a last-a)) (= a t)))
+
+ (defun field-translate (x y w h)
+   (concatenate 'string "translate(" (+ -50 (* (/ x w) 100)) "%," (+ -50 (* (/ y h) 100)) "%)"))
+
+ (var joystick true)
+ (var last-left false)
+ (var left false)
+ (var last-right false)
+ (var right false)
+ (var last-down false)
+ (var down false)
+ (var last-fire false)
+ (var fire false)
+ (var last-start false)
+ (var start false)
+ (var last (chain performance (now)))
+
+ (var bank (list))
+ (var last-bank bank)
+ (var block-count 0)
+
+ (var hold false)
+ (var current-level 1)
+ (var togo (* (+ current-level 1) 10))
+ (var true-speed 1.0)
+ (var speed true-speed)
+ (var x-speed 64.0)
+ (var swap-y 900)
+
+ (var blocks '("url(\"tree.png\")" "url(\"shrimp.png\")" "url(\"pudding.png\")" "url(\"koala.png\")"
+	       "url(\"tree.png\")" "url(\"shrimp.png\")" "url(\"pudding.png\")" "url(\"koala.png\")"
+	       "url(\"top.png\")" "url(\"top.png\")" "url(\"bottom.png\")"))
+ (var spawns '((55 235) (55 415) (55 595) (235 415) (235 595) (415 595)))
+
+ (var player (list))
+ (setf (@ player x) 325)
+ (setf (@ player y) 850)
+ (setf (@ player frame-counter) 0)
+ (setf (@ player frame) 0)
+ (setf (@ player frames) '("url(\"front.png\")" "url(\"right.png\")" "url(\"back.png\")" "url(\"left.png\")"))
+ (setf (@ player background) "url(\"front.png\")")
+ (setf (@ player score) 0)
+ (setf (@ player last-score) (@ player score))
+
+ (setf presents 0)
+ (setf display-presents 0)
+ (setf boxes (list))
+ (setf last-boxes boxes)
+ (setf wrapping '("url(\"wrap01.png\")" "url(\"wrap02.png\")" "url(\"wrap03.png\")" "url(\"wrap04.png\")" "url(\"wrap05.png\")" "url(\"wrap06.png\")"))
+ (setf wrap-rate 800)
+
+ (var game-over false)
+ (var paused false)
+
+ (defmacro sync-variables ()
+   `(progn
+      (setf last-left left)
+      (setf last-right right)
+      (setf last-down down)
+      (setf last-fire fire)
+      (setf last-start start)
+      (setf last now)))
+
+ (defmacro reset ()
+   `(progn
+      (setf last-left false)
+      (setf left false)
+      (setf last-right false)
+      (setf right false)
+      (setf last-down false)
+      (setf down false)
+      (setf last-fire false)
+      (setf fire false)
+      (setf last (chain performance (now)))
+
+      (loop named empty-bank
+	    for block in bank
+	    do (chain block parent-element (remove-child block)))
+      (setf bank (list))
+      (setf last-bank bank)
+      (setf block-count 0)
+
+      (setf hold false)
+      (setf current-level 1)
+      (setf togo (* (+ current-level 1) 10))
+      (setf true-speed 1.0)
+      (setf speed true-speed)
+      (setf swap-y 900)
+
+      (setf (@ level inner-text) current-level)
+
+      (setf (@ player x) 325)
+      (setf (@ player y) 850)
+      (setf (@ player frame-counter) 0)
+      (setf (@ player frame) 0)
+      (setf (@ player background) "url(\"front.png\")")
+      (setf (@ player score) 0)
+      
+      (loop named empty-presents
+	    for present in (chain document (query-selector-all ".present"))
+	    do (chain present parent-element (remove-child present)))
+
+      (setf presents 0)
+      (setf display-presents 0)
+      (setf (@ boxboard inner-text) display-presents)
+      (setf boxes (list))
+      (setf last-boxes boxes)
+      (setf wrap-rate 800)
+
+      (setf (@ lose style visibility) "hidden")
+
+      (setf game-over false)
+      (setf paused false)))
+
+ (defun advance-frame ()
+   (request-animation-frame #'advance-frame)
+   (let* ((now (chain performance (now)))
+	  (delta (- now last)))
+     
+     (block pre-physics
+
+       (setf left false)
+       (setf right false)
+       (setf down false)
+       (setf fire false)
+       (setf start false)
+
+       (loop named handle-keys
+	     for code in pressed
+	     do (case code
+		  ("a" (setf left t))
+		  ("d" (setf right t))
+		  ("s" (setf down t))
+		  ("j" (setf fire t))
+		  ("1" (setf start t))
+		  ("3" (setf joystick (not joystick)))))
+       (setf pressed (list))
+       
+       (unless (or hold (not joystick))
+	 (loop
+	   for gamepad in (chain navigator (get-gamepads))
+	   do (when (!== gamepad null)
+		(when (= (@ gamepad buttons 14 pressed) t)
+		  (setf left t))
+		(when (= (@ gamepad buttons 15 pressed) t)
+		  (setf right t))
+		(when (= (@ gamepad buttons 13 pressed) t)
+		  (setf down t))
+		(when (or (= (@ gamepad buttons 0 pressed) t) (= (@ gamepad buttons 1 pressed) t))
+		  (setf fire t))
+		(when (= (@ gamepad buttons 5 pressed) t)
+		  (setf start t)))))
+
+       (when (rising-edge start last-start)
+	 (when game-over
+	   (reset)
+	   (return-from advance-frame))
+	 (setf paused (not paused))
+	 (if paused
+	     (setf (@ pause style visibility) "visible")
+	     (setf (@ pause style visibility) "hidden")))
+
+       (when (or paused game-over)
+	 (sync-variables)
+	 (return-from advance-frame))
+
+       (when (rising-edge left last-left)
+	 (case (@ player x)
+	   (325 (setf (@ player x) 145))
+	   (505 (setf (@ player x) 325))))
+       (when (rising-edge right last-right)
+	 (case (@ player x)
+	   (325 (setf (@ player x) 505))
+	   (145 (setf (@ player x) 325))))
+       
+       (when (and (rising-edge fire last-fire)
+		  (loop named no-swapping
+			for block in bank
+			do (when (or (> (@ block l) 0) (> (@ block r) 0))
+			     (return-from no-swapping false))
+			finally (return-from no-swapping t)))
+	 (setf swap-y 900)
+	 (loop named set-swap
+	       for block in bank
+	       do (when (and (<= (abs (- (@ player x) (@ block x) )) 100)
+			     (> (@ block y) 50))
+		    (if (> (@ player x) (@ block x))
+			(setf (@ block r) (round (/ 180 (/ x-speed 64.0))))
+			(setf (@ block l) (round (/ 180 (/ x-speed 64.0)))))
+		    (setf (@ block delay) (* 32 (- 15 (/ (@ block y) 50))))
+		    (when (not (@ block falling))
+		      (setf swap-y (min swap-y (@ block y))))))
+	 (loop named falling-special-case
+	       for block in bank
+	       do (when (@ block falling)
+		    (when (< (@ block y) (- swap-y 100))
+		      (setf (@ block l) 0)
+		      (setf (@ block r) 0)
+		      (setf (@ block delay) 0))))
+	 (setf (@ player frame-counter) 180))
+
+       (when (rising-edge down last-down)
+	 (setf speed 48.0))
+
+       (when
+	   (loop named top-clear
+		 for block in bank
+		 do (when (< (@ block y) 150) (return-from top-clear false))
+		 finally (return-from top-clear t))
+	 (loop
+	   with spawn = (aref spawns (random (@ spawns length)))
+	   for i from 0 to 1
+	   do (let ((e (chain document (create-element "div"))))
+		(setf (@ e x) (aref spawn i))
+		(setf (@ e y) 50)
+		(setf (@ e background) (aref blocks (random (@ blocks length))))
+		(setf (@ e style background) (@ e background))		 
+		(setf (@ e style background-size) "cover")
+		(setf (@ e id) (incf block-count))
+		(setf (@ e l) 0)
+		(setf (@ e r) 0)
+		(setf (@ e delay) 0)
+		(setf (@ e opacity) 1)
+		(setf (@ e fade) 0)
+		(setf (@ e falling) f)
+		(setf (@ e score) 2.5)
+		(setf (@ e bottom) nil)
+		(chain e class-list (add "block"))
+		(chain bank (push e))
+		(chain field (append-child e)))))
+
+       (when
+	   (loop named all-static
+		 for block in bank
+		 do (when (= (@ block falling) t) (return-from all-static false))
+		 finally (return-from all-static t))
+
+	 (loop named top-blocks
+	       for block in bank
+	       do (when (= (@ block y) 50)
+		    (setf (@ block falling) t)))
+	 (decf togo)
+	 (when (= togo 0)
+	   (incf current-level)
+	   (setf current-level (min current-level 32))
+	   (setf togo (* current-level 10))
+	   (setf true-speed (* current-level 1))
+	   (setf (@ level inner-text) current-level))
+	 (setf speed true-speed))
+       
+       )
+
+     (setf delta (min delta 83))     
+     (while
+      (>= delta 1.0)
+      (decf delta 1.0)
+      (dotimes (i 4)
+					;begin iterations
+
+	(loop named collision
+	      for block in bank
+	      do (loop named inner
+		       for blockp in bank
+		       do (when (and (!= (@ block id) (@ blockp id))
+				     (= (@ block l) 0)
+				     (= (@ block r) 0)
+				     (= (@ blockp l) 0)
+				     (= (@ blockp r) 0)
+				     (> (@ block y) 50)
+				     (> (@ blockp y) 50)
+				     (<= (abs (- (@ block x) (@ blockp x))) 90)
+				     (<= (abs (- (@ blockp y) (@ block y))) 100))
+			    (setf (@ block falling) false)
+			    (when (= (@ block background) (@ blockp background))
+			      (setf (@ block fade) (/ 90.0 (/ speed 64.0)))
+			      (setf (@ blockp fade) (/ 90.0 (/ speed 64.0))))
+			    (when (= (@ block background) "url(\"top.png\")")
+			      (setf (@ block score) 0)
+			      (let ((bottom 850))
+				(loop named find-bottom
+				      for blockpp in bank
+				      do (when (and (= (@ blockpp background) "url(\"bottom.png\")")
+						    (<= (abs (- (@ block x) (@ blockpp x))) 90)
+						    (> (@ blockpp y) (@ block y)))
+					   (setf bottom (min (@ blockpp y) bottom))))
+				(if (= bottom 850)
+				    (setf (@ block fade) (/ 90.0 (/ speed 64.0)))
+				    (loop named wrap-fade
+					  for blockppp in bank
+					  with total = 0
+					  do (when (and (<= (abs (- (@ block x) (@ blockppp x))) 90)
+							(>= (@ blockppp y) (@ block y))
+							(<= (@ blockppp y) bottom))
+					       (setf (@ blockppp score) 0)
+					       (if (= (@ blockppp background) "url(\"bottom.png\")")
+						   (setf (@ block bottom) blockppp)
+						   (setf (@ blockppp fade) (/ 90.0 (/ speed 64.0))))
+					       (unless (or (= (@ blockppp background) "url(\"top.png\")")
+							   (= (@ blockppp background) "url(\"bottom.png\")"))
+						 (incf total)))
+					  finally (case total
+						    (0 (setf (@ block score) 50))
+						    (1 (setf (@ block score) 100))
+						    (2 (setf (@ block score) 100))
+						    (3 (setf (@ block score) 100))
+						    (4 (setf (@ block score) 200))
+						    (5 (setf (@ block score) 200))
+						    (6 (setf (@ block score) 500)))))))
+			    (return-from inner))))
+
+	(loop named floor
+	      for block in bank
+	      do (when (>= (@ block y) 750)
+		   (setf (@ block falling) false)
+		   (when (= (@ block background) "url(\"top.png\")")
+		     (setf (@ block score) 0)
+		     (setf (@ block fade) (/ 90.0 (/ speed 64.0))))))
+	
+	(unless hold
+	  (loop named advance-fall
+		for block in bank
+		do (when (= (@ block falling) t)
+		     (setf (@ block y) (+ (@ block y) (/ speed 64.0))))))
+
+	(loop named advance-block-fade
+	      for block in bank
+	      do (when (> (@ block fade) 0)
+		   (decf (@ block fade))
+		   (decf (@ block opacity) (/ 1.0 (/ 90.0 (/ speed 64.0))))))
+
+	(loop named advance-box-fade
+	      for box in boxes
+	      do (when (> (@ box fade) 0)
+		   (decf (@ box fade))
+		   (decf (@ box opacity) (/ 1.0 (/ 90.0 (/ speed 64.0))))))
+	
+	(loop named advance-swap
+	      for block in bank
+	      do (if (> (@ block delay) 0)
+		     (decf (@ block delay))
+		     (progn
+		       (when (> (@ block l) 0)
+			 (decf (@ block l))
+			 (decf (@ block x) (/ x-speed 64.0)))
+		       (when (> (@ block r) 0)
+			 (decf (@ block r))
+			 (incf (@ block x) (/ x-speed 64.0))))))
+	(when (> (@ player frame-counter) 0)
+	  (decf (@ player frame-counter) (/ x-speed 64.0))
+	  (when (or (= (@ player frame-counter) 90)
+		    (= (@ player frame-counter) 1))
+	    (setf (@ player frame) (mod (+ (@ player frame) 1) (@ player frames length)))))
+
+	(loop named advance-wrap
+	      for box in boxes
+	      do (when (> (@ box anim) 0)
+		   (decf (@ box anim))
+		   (when (= (@ box anim) 0)
+		     (incf (@ box frame))
+		     (if (= (@ box frame) (@ wrapping length))
+			 (setf (@ box fade) (/ 90.0 (/ speed 64.0)))
+			 (setf (@ box anim) wrap-rate)))))
+
+	(loop named lose
+	      for block in bank
+	      do (when (and (< (@ block y) 100)
+			    (@ block falling)
+			    (!= (@ block background) "url(\"top.png\")"))
+		   (loop named blockers
+			 for blockp in bank
+			 do (when (and (<= (abs (- (@ block x) (@ blockp x))) 90)
+				       (<= (abs (- (@ blockp y) (@ block y))) 100)
+				       (!= (@ block background) (@ blockp background)))
+			      (setf game-over t)
+			      (setf (@ lose style visibility) "visible")
+			      (sync-variables)))))
+
+					;end iterations
+	))
+
+     (block post-physics
+
+       (loop named snap
+	     for block in bank
+	     do (when (and (not (@ block falling))
+			   (= (@ block l) 0)
+			   (= (@ block r) 0))
+		  (loop named rows
+			for r in (list 50 150 250 350 450 550 650 750)
+			do (when (<= (abs (- (@ block y) r)) 50)
+			     (setf (@ block y) r)))
+		  (loop named cols
+			for c in (list 55 235 415 595)
+			do (when (<= (abs (- (@ block x) c)) 90) 
+			     (setf (@ block x) c)))))
+
+       (setf last-bank bank)
+       (setf bank (list))
+       (loop named clear-faded-blocks
+	     for block in last-bank
+	     do (if (<= (@ block opacity) 0.001)
+		    (progn
+		      (chain block parent-element (remove-child block))
+		      (if (< (@ block score) 5)
+			  (setf (@ player score) (+ (@ player score) (@ block score)))
+			  (progn
+			    (setf hold true)
+			    (let ((box (chain document (create-element "div")))
+				  (present (chain document (create-element "div"))))
+			      (chain box class-list (add "box"))
+			      (setf (@ box score) (@ block score))
+			      (setf (@ box style transform) (concatenate 'string
+									 "translate("
+									 (+ -50 (* (/ (@ block bottom x) 110) 100)) "%,"
+									 (+ -50 (* (/ (- (@ block bottom y) 25) 150) 100)) "%)"))
+			      (setf (@ box frame) 0)
+			      (setf (@ box background) nil)
+			      (setf (@ box anim) wrap-rate)
+			      (setf (@ box fade) 0)
+			      (setf (@ box opacity) 1)
+			      (chain boxes (push box))
+			      (chain field (append-child box))
+			      (setf (@ box present) present)
+			      (chain present class-list (add "present"))
+			      (setf (@ present style transform) (concatenate 'string
+									     "translate("
+									     (+ -0 (* (/ 1280 110) 100)) "%,"
+									     (+ -0 (* (/ (- 749 (* presents 70)) 150) 100)) "%)"))
+			      (setf (@ present style opacity) 0)
+			      (chain scrn (append-child present))
+			      (incf presents)
+			      (setf (@ block bottom opacity) 0)))))
+		    (chain bank (push block))))
+
+       (setf last-boxes boxes)
+       (setf boxes (list))
+       (loop named clear-faded-boxes
+	     for box in last-boxes
+	     do (if (<= (@ box opacity) 0.001)
+		    (progn
+		      (chain box parent-element (remove-child box))
+		      (setf (@ box present style opacity) 1)
+		      (setf (@ player score) (+ (@ player score) (@ box score)))
+		      (incf display-presents)
+		      (setf (@ boxboard inner-text) display-presents))
+		    (chain boxes (push box))))
+
+       (when (< (@ boxes length) 1)
+	 (setf hold false))
+
+       (sync-variables)
+
+       )
+     
+     (block draw
+
+       (loop named position
+	     for block in bank
+	     do (setf (@ block style transform) (field-translate (@ block x) (@ block y) 110 100)))
+
+       (loop named block-fade
+	     for block in bank
+	     do (setf (@ block style opacity) (@ block opacity)))
+
+       (loop named box-fade
+	     for box in boxes
+	     do (progn
+		  (setf (@ box style opacity) (@ box opacity))
+		  (setf (@ box present style opacity) (- 1 (@ box opacity)))))
+
+       (setf (@ bondi style transform) (concatenate 'string "translate(" (+ -50 (* (/ (+ 395 (@ player x)) 290) 100.0)) "%," (+ -100 (* (/ 1080 339) 100.0)) "%)"))
+
+       (when (!= (@ player background) (aref (@ player frames) (@ player frame)))
+	 (setf (@ player background) (aref (@ player frames) (@ player frame)))
+	 (setf (@ bondi style background) (@ player background))
+	 (setf (@ bondi style background-size) "cover"))
+
+       (loop named box-frames
+	     for box in boxes
+	     do (when (!= (@ box background) (aref wrapping (@ box frame)))
+		  (setf (@ box background) (aref wrapping (@ box frame)))
+		  (setf (@ box style background) (@ box background))
+		  (setf (@ box style background-size) "cover")))
+
+       (when (!= (@ player score) (@ player last-score))
+	 (setf (@ scoreboard inner-text) (@ player score))
+	 (setf (@ player last-score) (@ player score)))
+       
+       )))
+
+ (var cache (list))
+ (var preload (new (-image)))
+ (setf (@ preload onload)
+       #'(lambda ()
+	   (setf (@ scrn style visibility) "visible")
+	   (let* ((resources '("back.png" "background.png" "bottom.png" "front.png" "gameover.png" "koala.png" "left.png" "pause.png" "pudding.png" "right.png" "shrimp.png" "start.png" "top.png" "tree.png" "wrap01.png" "wrap02.png" "wrap03.png" "wrap04.png" "wrap05.png" "wrap06.png"))
+		  (toload (@ resources length)))
+	     (defun loaded ()
+	       (decf toload)
+	       (when (= toload 0)
+		 (setf (@ starter onclick)
+		       #'(lambda ()
+			   (chain music (play))
+			   (chain loader parent-element (remove-child loader))
+			   (request-animation-frame #'advance-frame)))
+		 (setf (@ starter style visibility) "visible")))
+	     (loop named load-resources
+		   for resource in resources
+		   do (let ((img (new (-image))))
+			(chain cache (push img))
+			(setf (@ img onload) #'loaded)
+			(setf (@ img src) resource))))))
+ (setf (@ preload src) "loading.jpg")
+ 
+ )
+
+(with-open-file
+    (idx
+     "/Users/bondi/Downloads/foolin/joy/index.html"
+     :direction :output
+     :if-does-not-exist :create
+     :if-exists :supersede)
+  (format
+   idx
+   "<!DOCTYPE html>~%~a~%"
+   (ps-html
+    ((:html :lang "en")
+     (:head
+      ((:meta :charset "utf-8"))
+      ((:meta :name "viewport" :content "width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"))
+      ((:meta :name "apple-mobile-web-app-capable" :content "yes"))
+      (:title "Bondi's Box: Christmas Edition")
+      (:style "
+:root {
+  --base-size: 0px;
+}
+
+@font-face {
+  font-family: \"chunked\";
+  src: url(\"chunkfive-regular-webfont.woff2\");
+}
+
+body, html {
+  font-family: \"chunked\", sans-serif;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: rgb(0,0,0);
+}
+
+#scrn {
+  font-size: var(--base-size);
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%,-50%);
+  visibility: hidden;
+  background: url(\"background.png\");
+  background-size: 100% 100%;
+  overflow: hidden;
+}
+
+#field {
+  position: absolute;
+  top: calc(100% * (55 / 1080));
+  left: calc(100% * (395 / 1440));
+  width: calc(100% * (650 / 1440));
+  height: calc(100% * (900 / 1080));
+  overflow: hidden;
+}
+
+#player {
+  position: absolute;
+  top: 0%;
+  left: 0%;
+  width: calc(100% * 100 / 650);
+  height: calc(100% * 100 / 900);
+  transform: translate(-50%,-50%);
+  background: rgb(0,0,0);
+}
+
+.block {
+  position: absolute;
+  top: 0%;
+  left: 0%;
+  width: calc(100% * 110 / 650);
+  height: calc(100% * 100 / 900);
+  transform: translate(-50%,-50%);
+}
+
+#field .box {
+  position: absolute;
+  top: 0%;
+  left: 0%;
+  width: calc(100% * 110 / 650);
+  height: calc(100% * 150 / 900);
+  transform: translate(-50%,-50);
+}
+
+.present {
+  position: absolute;
+  top: 0%;
+  left: 0%;
+  width: calc(100% * 110 / 1440);
+  height: calc(100% * 150 / 1080);
+  transform: translate(-50%,-50%);
+  background: url(\"wrap06.png\");
+  background-size: 100% 100%;
+  z-index: 10;
+}
+
+#bondi {
+  position: absolute;
+  top: 0%;
+  left: 0%;
+  width: calc(100% * 290 / 1440);
+  height: calc(100% * 339 / 1080);
+  transform: translate(-50%,-100%);
+  background: url(\"front.png\");
+  background-size: cover;
+}
+
+#pause {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: calc(100% * 329 / 1440);
+  height: calc(100% * 129 / 1080);
+  transform: translate(-50%,-50%);
+  background: url(\"pause.png\");
+  background-size: cover;
+  visibility: hidden;
+}
+
+#lose {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: calc(100% * 329 / 1440);
+  height: calc(100% * 129 / 1080);
+  transform: translate(-50%,-50%);
+  background: url(\"gameover.png\");
+  background-size: cover;
+  visibility: hidden;
+}
+
+#level {
+  position: absolute;
+  font-size: 60%;
+  top: 32.5%;
+  left: 18%;
+  color: white;
+}
+
+#scoreboard {
+  position: absolute;
+  font-size: 80%;
+  top: 9%;
+  left: 77%;
+  color: white;
+  z-index: 100;
+}
+
+#boxboard {
+  position: absolute;
+  font-size: 90%;
+  top: 47%;
+  left: 76.5%;
+  color: white;
+  z-index: 100;
+}
+
+#loader {
+  position: absolute;
+  top: 0%;
+  left: 0%;
+  width: 100%;
+  height: 100%;
+  background: rgb(128,128,128);
+  background: url(\"loading.jpg\");
+  background-size: cover;
+  z-index: 200;
+}
+
+#starter {
+  position: absolute;
+  top: calc(100% * 507 / 1080);
+  left: calc(100% * 107 / 1440);
+  width: calc(100% * 389 / 1440);
+  height: calc(100% * 152 / 1080);
+  background: url(\"start.png\");
+  background-size: cover;
+  visibility: hidden;
+}
+"))
+     ((:body :id "body")
+      ((:audio :id "music" :loop t :preload "auto" :src "xmascat.mp3"))
+      ((:div :id "scrn")
+       ((:div :id "bondi"))
+       ((:div :id "field"))
+       ((:div :id "pause"))
+       ((:div :id "lose"))
+       ((:div :id "level") "1")
+       ((:div :id "scoreboard") "0")
+       ((:div :id "boxboard") "0")
+       ((:div :id "loader")
+	((:div :id "starter"))))
+      ((:script :type "text/javascript") main-src))
+     ))))
